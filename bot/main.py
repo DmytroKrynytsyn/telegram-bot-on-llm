@@ -31,9 +31,20 @@ async def get_updates(offset: int | None = None):
         return r.json().get("result", [])
 
 
-async def send_message(chat_id: int, text: str):
+async def send_message(chat_id: int, text: str) -> int:
     async with httpx.AsyncClient() as client:
-        await client.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": text})
+        r = await client.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": text})
+        r.raise_for_status()
+        return r.json()["result"]["message_id"]
+
+
+async def edit_message(chat_id: int, message_id: int, text: str):
+    async with httpx.AsyncClient() as client:
+        await client.post(f"{TELEGRAM_API}/editMessageText", json={
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+        })
 
 
 async def ask_ollama(prompt: str) -> str:
@@ -57,9 +68,9 @@ async def poll_loop():
                 chat_id = message.get("chat", {}).get("id")
                 text = message.get("text", "").strip()
                 if chat_id and text:
-                    await send_message(chat_id, "⏳ thinking...")
+                    message_id = await send_message(chat_id, "⏳ thinking...")
                     reply = await ask_ollama(text)
-                    await send_message(chat_id, reply)
+                    await edit_message(chat_id, message_id, reply)
         except Exception as e:
             print(f"poll error: {e}")
             await asyncio.sleep(5)
