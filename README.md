@@ -15,10 +15,11 @@ The bot uses long-polling - no webhook, no ingress needed. On startup it auto-de
 ## Bootstrap
 
 ```bash
-# create the token secret before ArgoCD syncs
+# 1. create the token secret before ArgoCD syncs
 kubectl create secret generic telegram-bot-on-llm-secret \
   --from-literal=TELEGRAM_TOKEN=<your-token> \
   -n telegram-bot-on-llm
 
-kubectl apply -f argocd/app-of-apps.yaml
+# 2. register the app with ArgoCD
+kubectl apply -f https://raw.githubusercontent.com/DmytroKrynytsyn/telegram-bot-on-llm/main/argocd/application.yaml
 ```
