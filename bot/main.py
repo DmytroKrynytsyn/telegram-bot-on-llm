@@ -148,6 +148,7 @@ async def poll_loop():
                     log("unauthorized_user", user_id=user_id, username=user.get("username"), user=user, text=text)
                     unauthorized_attempts.inc()
                     await notify_admin(user, text)
+                    await send_message(chat_id, "Sorry, you are not authorized to use this bot.")
                     continue
 
                 if len(text) > MAX_MESSAGE_LENGTH:
