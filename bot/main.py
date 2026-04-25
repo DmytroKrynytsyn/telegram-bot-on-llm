@@ -1,14 +1,26 @@
 import os
 import json
 import time
+import logging
 import httpx
 import asyncio
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Histogram
 
+# suppress uvicorn access logs for health and metrics
+class FilterHealthMetrics(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return "/health" not in msg and "/metrics" not in msg
+
+logging.getLogger("uvicorn.access").addFilter(FilterHealthMetrics())
+
 app = FastAPI()
-Instrumentator().instrument(app).expose(app)
+
+Instrumentator(
+    should_ignore_handler_paths=["/health", "/metrics"]
+).instrument(app).expose(app)
 
 llm_request_duration = Histogram(
     "llm_request_duration_seconds",
@@ -19,7 +31,6 @@ llm_request_duration = Histogram(
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://kbrain:11434")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-OLLAMA_TIMEOUT = 30 * 60
 
 ollama_model: str | None = None
 
@@ -80,6 +91,9 @@ async def ask_ollama(prompt: str) -> str:
         duration = round(time.monotonic() - t0, 2)
         log("llm_request_failed", model=ollama_model, duration_s=duration, error=str(e))
         raise
+
+
+OLLAMA_TIMEOUT = 30 * 60
 
 
 async def poll_loop():
