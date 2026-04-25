@@ -6,7 +6,7 @@ import httpx
 import asyncio
 from fastapi import FastAPI
 from prometheus_fastapi_instrumentator import Instrumentator
-from prometheus_client import Histogram
+from prometheus_client import Histogram, Counter
 
 class FilterHealthMetrics(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
@@ -22,6 +22,11 @@ llm_request_duration = Histogram(
     "llm_request_duration_seconds",
     "Ollama LLM request duration",
     ["model"]
+)
+
+unauthorized_attempts = Counter(
+    "unauthorized_attempts_total",
+    "Number of unauthorized access attempts"
 )
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -141,6 +146,7 @@ async def poll_loop():
 
                 if ALLOWED_USER_IDS and user_id not in ALLOWED_USER_IDS:
                     log("unauthorized_user", user_id=user_id, username=user.get("username"), user=user, text=text)
+                    unauthorized_attempts.inc()
                     await notify_admin(user, text)
                     continue
 
