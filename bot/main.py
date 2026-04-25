@@ -4,11 +4,10 @@ import time
 import logging
 import httpx
 import asyncio
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Histogram
 
-# suppress uvicorn access logs for health and metrics
 class FilterHealthMetrics(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()
@@ -30,6 +29,7 @@ llm_request_duration = Histogram(
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://kbrain:11434")
+OLLAMA_TIMEOUT = 30 * 60
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 ollama_model: str | None = None
@@ -93,9 +93,6 @@ async def ask_ollama(prompt: str) -> str:
         raise
 
 
-OLLAMA_TIMEOUT = 30 * 60
-
-
 async def poll_loop():
     offset = None
     while True:
@@ -107,12 +104,12 @@ async def poll_loop():
                 chat_id = message.get("chat", {}).get("id")
                 text = message.get("text", "").strip()
                 if chat_id and text:
-                    log("message_received", chat_id=chat_id, text_len=len(text), text=text)
+                    log("message_received", chat_id=chat_id, user=message.get("from", {}), text_len=len(text), text=text)
                     await send_message(chat_id, "⏳ thinking...")
                     try:
                         reply = await ask_ollama(text)
                         await send_message(chat_id, reply)
-                        log("reply_sent", chat_id=chat_id, reply_len=len(reply), reply=reply)
+                        log("reply_sent", chat_id=chat_id, user=message.get("from", {}), reply_len=len(reply), reply=reply)
                     except httpx.TimeoutException:
                         await send_message(chat_id, "⏰ timeout, please try again")
                     except Exception as e:
