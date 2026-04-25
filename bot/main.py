@@ -53,7 +53,7 @@ async def ask_ollama(prompt: str) -> str:
     log("llm_request_started", model=ollama_model, prompt_len=len(prompt))
     t0 = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=600) as client:
             r = await client.post(
                 f"{OLLAMA_URL}/api/generate",
                 json={"model": ollama_model, "prompt": prompt, "stream": False},
@@ -81,11 +81,11 @@ async def poll_loop():
                 chat_id = message.get("chat", {}).get("id")
                 text = message.get("text", "").strip()
                 if chat_id and text:
-                    log("message_received", chat_id=chat_id, text_len=len(text))
+                    log("message_received", chat_id=chat_id, text_len=len(text), text=text)
                     await send_message(chat_id, "⏳ thinking...")
                     reply = await ask_ollama(text)
                     await send_message(chat_id, reply)
-                    log("reply_sent", chat_id=chat_id)
+                    log("reply_sent", chat_id=chat_id, text=reply)
         except Exception as e:
             log("poll_error", error=str(e))
             await asyncio.sleep(5)
