@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set timestamp tag
+        id: tag
+        run: echo "TAG=$(date -u +%Y%m%d%H%M%S)" >> $GITHUB_OUTPUT
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: bot/Dockerfile
+          push: true
+          tags: dkrinitsyn/telegram-bot-on-llm:${{ steps.tag.outputs.TAG }}
+
+      - name: Update helm tag
+        run: |
+          sed -i "s/tag: .*/tag: \"${{ steps.tag.outputs.TAG }}\"/" helm/bot/values.yaml
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add helm/bot/values.yaml
+          git commit -m "ci: update bot image tag to ${{ steps.tag.outputs.TAG }}"
+          git push

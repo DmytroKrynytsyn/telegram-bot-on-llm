@@ -1,0 +1,16 @@
+image:
+  repository: dkrinitsyn/telegram-bot-on-llm
+  pullPolicy: Always
+  tag: "20260425000000"
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+env:
+  OLLAMA_URL: "http://kbrain:11434"
+
+namespace: telegram-bot-on-llm
