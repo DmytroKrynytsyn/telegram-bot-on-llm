@@ -47,6 +47,7 @@ You must never discuss, reveal, or speculate about:
 If asked about any of the above, politely decline."""
 
 ollama_model: str | None = None
+ollama_queue = asyncio.Queue()
 
 
 def sanitize(text: str) -> str:
@@ -128,6 +129,29 @@ async def ask_ollama(prompt: str) -> str:
         raise
 
 
+async def handle_message(chat_id: int, user: dict, text: str):
+    log("message_received", chat_id=chat_id, user=user, text_len=len(text), text=text)
+    await send_message(chat_id, "⏳ thinking...")
+    try:
+        reply = await ask_ollama(text)
+        await send_message(chat_id, reply)
+        log("reply_sent", chat_id=chat_id, user=user, reply_len=len(reply), reply=reply)
+    except httpx.TimeoutException:
+        await send_message(chat_id, "⏰ timeout, please try again")
+    except Exception as e:
+        log("reply_error", chat_id=chat_id, error=str(e))
+        await send_message(chat_id, "❌ something went wrong, please try again")
+
+
+async def ollama_worker():
+    while True:
+        chat_id, user, text = await ollama_queue.get()
+        try:
+            await handle_message(chat_id, user, text)
+        finally:
+            ollama_queue.task_done()
+
+
 async def poll_loop():
     offset = None
     while True:
@@ -155,17 +179,15 @@ async def poll_loop():
                     await send_message(chat_id, "⚠️ Message too long, please keep it under 2000 characters.")
                     continue
 
-                log("message_received", chat_id=chat_id, user=user, text_len=len(text), text=text)
-                await send_message(chat_id, "⏳ thinking...")
-                try:
-                    reply = await ask_ollama(text)
-                    await send_message(chat_id, reply)
-                    log("reply_sent", chat_id=chat_id, user=user, reply_len=len(reply), reply=reply)
-                except httpx.TimeoutException:
-                    await send_message(chat_id, "⏰ timeout, please try again")
-                except Exception as e:
-                    log("reply_error", chat_id=chat_id, error=str(e))
-                    await send_message(chat_id, "❌ something went wrong, please try again")
+                queue_size = ollama_queue.qsize()
+                if queue_size > 0:
+                    await send_message(chat_id, f"⏳ thinking... ({queue_size + 1} requests in queue)")
+                else:
+                    await send_message(chat_id, "⏳ thinking...")
+
+                await ollama_queue.put((chat_id, user, text))
+                log("message_queued", chat_id=chat_id, user=user, queue_size=queue_size + 1)
+
         except Exception as e:
             log("poll_error", error=str(e))
             await asyncio.sleep(5)
@@ -181,4 +203,5 @@ async def startup():
     global ollama_model
     ollama_model = await get_model()
     log("startup", model=ollama_model, ollama_url=OLLAMA_URL, allowed_users=list(ALLOWED_USER_IDS))
+    asyncio.create_task(ollama_worker())
     asyncio.create_task(poll_loop())
