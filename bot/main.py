@@ -1,17 +1,30 @@
 import os
+import json
+import time
 import httpx
 import asyncio
 from fastapi import FastAPI
 from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import Histogram
 
 app = FastAPI()
 Instrumentator().instrument(app).expose(app)
+
+llm_request_duration = Histogram(
+    "llm_request_duration_seconds",
+    "Ollama LLM request duration",
+    ["model"]
+)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://kbrain:11434")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 ollama_model: str | None = None
+
+
+def log(event: str, **kwargs):
+    print(json.dumps({"event": event, **kwargs}), flush=True)
 
 
 async def get_model() -> str:
@@ -31,30 +44,30 @@ async def get_updates(offset: int | None = None):
         return r.json().get("result", [])
 
 
-async def send_message(chat_id: int, text: str) -> int:
+async def send_message(chat_id: int, text: str):
     async with httpx.AsyncClient() as client:
-        r = await client.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": text})
-        r.raise_for_status()
-        return r.json()["result"]["message_id"]
-
-
-async def edit_message(chat_id: int, message_id: int, text: str):
-    async with httpx.AsyncClient() as client:
-        await client.post(f"{TELEGRAM_API}/editMessageText", json={
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "text": text,
-        })
+        await client.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": text})
 
 
 async def ask_ollama(prompt: str) -> str:
-    async with httpx.AsyncClient(timeout=120) as client:
-        r = await client.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={"model": ollama_model, "prompt": prompt, "stream": False},
-        )
-        r.raise_for_status()
-        return r.json()["response"]
+    log("llm_request_started", model=ollama_model, prompt_len=len(prompt))
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={"model": ollama_model, "prompt": prompt, "stream": False},
+            )
+            r.raise_for_status()
+            reply = r.json()["response"]
+            duration = round(time.monotonic() - t0, 2)
+            llm_request_duration.labels(model=ollama_model).observe(duration)
+            log("llm_response_received", model=ollama_model, duration_s=duration, reply_len=len(reply))
+            return reply
+    except Exception as e:
+        duration = round(time.monotonic() - t0, 2)
+        log("llm_request_failed", model=ollama_model, duration_s=duration, error=str(e))
+        raise
 
 
 async def poll_loop():
@@ -68,11 +81,13 @@ async def poll_loop():
                 chat_id = message.get("chat", {}).get("id")
                 text = message.get("text", "").strip()
                 if chat_id and text:
-                    message_id = await send_message(chat_id, "⏳ thinking...")
+                    log("message_received", chat_id=chat_id, text_len=len(text))
+                    await send_message(chat_id, "⏳ thinking...")
                     reply = await ask_ollama(text)
-                    await edit_message(chat_id, message_id, reply)
+                    await send_message(chat_id, reply)
+                    log("reply_sent", chat_id=chat_id)
         except Exception as e:
-            print(f"poll error: {e}")
+            log("poll_error", error=str(e))
             await asyncio.sleep(5)
 
 
@@ -85,5 +100,5 @@ def health():
 async def startup():
     global ollama_model
     ollama_model = await get_model()
-    print(f"using model: {ollama_model}")
+    log("startup", model=ollama_model, ollama_url=OLLAMA_URL)
     asyncio.create_task(poll_loop())
