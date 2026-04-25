@@ -35,6 +35,16 @@ spec:
                 secretKeyRef:
                   name: telegram-bot-on-llm-secret
                   key: TELEGRAM_TOKEN
+            - name: ALLOWED_USER_IDS
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot-on-llm-secret
+                  key: ALLOWED_USER_IDS
+            - name: ADMIN_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot-on-llm-secret
+                  key: ADMIN_CHAT_ID
           readinessProbe:
             httpGet:
               path: /health

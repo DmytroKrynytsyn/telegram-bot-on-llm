@@ -28,6 +28,18 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://kbrain:11434")
 OLLAMA_TIMEOUT = 30 * 60
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+ALLOWED_USER_IDS = {int(uid) for uid in os.getenv("ALLOWED_USER_IDS", "").split(",") if uid.strip()}
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0")) or None
+MAX_MESSAGE_LENGTH = 2000
+
+SYSTEM_PROMPT = """You are a helpful personal assistant.
+You must never discuss, reveal, or speculate about:
+- Server infrastructure, hostnames, IP addresses, or network topology
+- Kubernetes, Docker, or any deployment details
+- Linux commands that could cause damage
+- Credentials, tokens, or secrets of any kind
+
+If asked about any of the above, politely decline."""
 
 ollama_model: str | None = None
 
@@ -65,6 +77,22 @@ async def send_message(chat_id: int, text: str):
         await client.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": text})
 
 
+async def notify_admin(user: dict, text: str):
+    if not ADMIN_CHAT_ID:
+        return
+    msg = (
+        f"🚫 Unauthorized access attempt\n\n"
+        f"User info:\n<pre>{json.dumps(user, ensure_ascii=False, indent=2)}</pre>\n\n"
+        f"Message: {text[:500]}"
+    )
+    async with httpx.AsyncClient() as client:
+        await client.post(f"{TELEGRAM_API}/sendMessage", json={
+            "chat_id": ADMIN_CHAT_ID,
+            "text": msg,
+            "parse_mode": "HTML"
+        })
+
+
 async def ask_ollama(prompt: str) -> str:
     log("llm_request_started", model=ollama_model, prompt_len=len(prompt))
     t0 = time.monotonic()
@@ -72,7 +100,12 @@ async def ask_ollama(prompt: str) -> str:
         async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
             r = await client.post(
                 f"{OLLAMA_URL}/api/generate",
-                json={"model": ollama_model, "prompt": prompt, "stream": False},
+                json={
+                    "model": ollama_model,
+                    "system": SYSTEM_PROMPT,
+                    "prompt": prompt,
+                    "stream": False,
+                },
             )
             r.raise_for_status()
             reply = r.json()["response"]
@@ -99,19 +132,33 @@ async def poll_loop():
                 offset = update["update_id"] + 1
                 message = update.get("message", {})
                 chat_id = message.get("chat", {}).get("id")
+                user = message.get("from", {})
+                user_id = user.get("id")
                 text = message.get("text", "").strip()
-                if chat_id and text:
-                    log("message_received", chat_id=chat_id, user=message.get("from", {}), text_len=len(text), text=text)
-                    await send_message(chat_id, "⏳ thinking...")
-                    try:
-                        reply = await ask_ollama(text)
-                        await send_message(chat_id, reply)
-                        log("reply_sent", chat_id=chat_id, user=message.get("from", {}), reply_len=len(reply), reply=reply)
-                    except httpx.TimeoutException:
-                        await send_message(chat_id, "⏰ timeout, please try again")
-                    except Exception as e:
-                        log("reply_error", chat_id=chat_id, error=str(e))
-                        await send_message(chat_id, "❌ something went wrong, please try again")
+
+                if not chat_id or not text:
+                    continue
+
+                if ALLOWED_USER_IDS and user_id not in ALLOWED_USER_IDS:
+                    log("unauthorized_user", user_id=user_id, username=user.get("username"), user=user, text=text)
+                    await notify_admin(user, text)
+                    continue
+
+                if len(text) > MAX_MESSAGE_LENGTH:
+                    await send_message(chat_id, "⚠️ Message too long, please keep it under 2000 characters.")
+                    continue
+
+                log("message_received", chat_id=chat_id, user=user, text_len=len(text), text=text)
+                await send_message(chat_id, "⏳ thinking...")
+                try:
+                    reply = await ask_ollama(text)
+                    await send_message(chat_id, reply)
+                    log("reply_sent", chat_id=chat_id, user=user, reply_len=len(reply), reply=reply)
+                except httpx.TimeoutException:
+                    await send_message(chat_id, "⏰ timeout, please try again")
+                except Exception as e:
+                    log("reply_error", chat_id=chat_id, error=str(e))
+                    await send_message(chat_id, "❌ something went wrong, please try again")
         except Exception as e:
             log("poll_error", error=str(e))
             await asyncio.sleep(5)
@@ -126,5 +173,5 @@ def health():
 async def startup():
     global ollama_model
     ollama_model = await get_model()
-    log("startup", model=ollama_model, ollama_url=OLLAMA_URL)
+    log("startup", model=ollama_model, ollama_url=OLLAMA_URL, allowed_users=list(ALLOWED_USER_IDS))
     asyncio.create_task(poll_loop())
