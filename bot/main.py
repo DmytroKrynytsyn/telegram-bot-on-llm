@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import logging
@@ -17,9 +18,10 @@ logging.getLogger("uvicorn.access").addFilter(FilterHealthMetrics())
 
 app = FastAPI()
 
-Instrumentator(
-    should_ignore_handler_paths=["/health", "/metrics"]
-).instrument(app).expose(app)
+Instrumentator().instrument(
+    app,
+    should_ignore_handler=lambda req: re.search(r"/health|/metrics", req.url.path) is not None
+).expose(app)
 
 llm_request_duration = Histogram(
     "llm_request_duration_seconds",
