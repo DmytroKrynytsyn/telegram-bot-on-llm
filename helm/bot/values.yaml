@@ -1,7 +1,7 @@
 image:
   repository: dkrinitsyn/telegram-bot-on-llm
   pullPolicy: Always
-  tag: "20260425102940"
+  tag: "20260425000000"
 
 replicaCount: 1
 
@@ -12,6 +12,5 @@ service:
 
 env:
   OLLAMA_URL: "http://kbrain:11434"
-  TZ: "UTC"
 
 namespace: telegram-bot-on-llm
