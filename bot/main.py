@@ -47,7 +47,7 @@ You must never discuss, reveal, or speculate about:
 If asked about any of the above, politely decline."""
 
 ollama_model: str | None = None
-ollama_queue = asyncio.Queue()
+ollama_queue: asyncio.Queue = None
 
 
 def sanitize(text: str) -> str:
@@ -131,7 +131,6 @@ async def ask_ollama(prompt: str) -> str:
 
 async def handle_message(chat_id: int, user: dict, text: str):
     log("message_received", chat_id=chat_id, user=user, text_len=len(text), text=text)
-    await send_message(chat_id, "⏳ thinking...")
     try:
         reply = await ask_ollama(text)
         await send_message(chat_id, reply)
@@ -200,7 +199,8 @@ def health():
 
 @app.on_event("startup")
 async def startup():
-    global ollama_model
+    global ollama_model, ollama_queue
+    ollama_queue = asyncio.Queue()
     ollama_model = await get_model()
     log("startup", model=ollama_model, ollama_url=OLLAMA_URL, allowed_users=list(ALLOWED_USER_IDS))
     asyncio.create_task(ollama_worker())
