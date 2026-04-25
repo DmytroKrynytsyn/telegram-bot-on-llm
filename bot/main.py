@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import httpx
@@ -23,8 +24,15 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 ollama_model: str | None = None
 
 
+def sanitize(text: str) -> str:
+    if TELEGRAM_TOKEN:
+        return text.replace(TELEGRAM_TOKEN, "***")
+    return text
+
+
 def log(event: str, **kwargs):
-    print(json.dumps({"event": event, **kwargs}), flush=True)
+    sanitized = {k: sanitize(str(v)) for k, v in kwargs.items()}
+    print(json.dumps({"event": event, **sanitized}), flush=True)
 
 
 async def get_model() -> str:

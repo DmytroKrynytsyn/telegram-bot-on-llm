@@ -5,6 +5,8 @@ metadata:
   namespace: {{ .Values.namespace }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: telegram-bot-on-llm
@@ -16,6 +18,7 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8000"
     spec:
+      terminationGracePeriodSeconds: 0
       containers:
         - name: telegram-bot-on-llm
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
