@@ -30,7 +30,7 @@ unauthorized_attempts = Counter(
 )
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://kbrain:11434")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://kbrain2:11434")
 OLLAMA_TIMEOUT = 30 * 60
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 ALLOWED_USER_IDS = {int(uid) for uid in os.getenv("ALLOWED_USER_IDS", "").split(",") if uid.strip()}

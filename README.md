@@ -1,6 +1,6 @@
 # telegram-bot-on-llm
 
-Telegram bot running on k3s, backed by a local Ollama LLM on kbrain.
+Telegram bot running on k3s, backed by a local Ollama LLM on kbrain2.
 
 git push -> Github Action -> Docker Hub -> ArgoCD -> k3s
 
