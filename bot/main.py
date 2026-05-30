@@ -2,7 +2,6 @@ import os
 import json
 import time
 import uuid
-import logging
 import asyncio
 import httpx
 from fastapi import FastAPI
@@ -10,11 +9,14 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Histogram, Counter
 import aio_pika
 
-class FilterHealthMetrics(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
+
+class FilterHealthMetrics:
+    def filter(self, record) -> bool:
         msg = record.getMessage()
         return "/health" not in msg and "/metrics" not in msg
 
+
+import logging
 logging.getLogger("uvicorn.access").addFilter(FilterHealthMetrics())
 
 app = FastAPI()
@@ -39,7 +41,7 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 ALLOWED_USER_IDS = {int(uid) for uid in os.getenv("ALLOWED_USER_IDS", "").split(",") if uid.strip()}
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0")) or None
 MAX_MESSAGE_LENGTH = 2000
-LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "180"))
+LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "1800"))
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "qwen2.5:32b-instruct-q2_K")
 
 SYSTEM_PROMPT = """You are a helpful personal assistant.
@@ -101,8 +103,6 @@ async def notify_admin(user: dict, text: str):
 
 
 async def ask_llm_broker(prompt: str) -> tuple[str, float, str]:
-    """Publish to llm_requests, wait for response on llm_responses_telegram_bot.
-    Returns (result, duration_seconds, model_used)."""
     correlation_id = str(uuid.uuid4())
     loop = asyncio.get_event_loop()
     future: asyncio.Future = loop.create_future()
@@ -114,7 +114,6 @@ async def ask_llm_broker(prompt: str) -> tuple[str, float, str]:
         "request_id": correlation_id,
     })
 
-    t0 = time.monotonic()
     log("llm_request_published", correlation_id=correlation_id, prompt_len=len(prompt))
 
     await rabbitmq_channel.default_exchange.publish(
@@ -128,12 +127,12 @@ async def ask_llm_broker(prompt: str) -> tuple[str, float, str]:
     )
 
     try:
+        t0 = time.monotonic()
         response = await asyncio.wait_for(future, timeout=LLM_TIMEOUT)
+        duration = time.monotonic() - t0
+        return response["result"], duration, response.get("model_used", DEFAULT_MODEL)
     finally:
         pending.pop(correlation_id, None)
-
-    duration = time.monotonic() - t0
-    return response["result"], duration, response.get("model_used", DEFAULT_MODEL)
 
 
 async def on_llm_response(message: aio_pika.IncomingMessage) -> None:
@@ -197,18 +196,22 @@ async def poll_loop():
                     await send_message(chat_id, "⚠️ Message too long, please keep it under 2000 characters.")
                     continue
 
-                queue_size = len(pending)
-                if queue_size > 0:
-                    await send_message(chat_id, f"⏳ thinking... ({queue_size + 1} requests in queue)")
-                else:
-                    await send_message(chat_id, "⏳ thinking...")
-
+                await send_message(chat_id, "⏳ thinking...")
                 asyncio.create_task(handle_message(chat_id, user, text))
-                log("message_queued", chat_id=chat_id, pending=queue_size + 1)
+                log("message_queued", chat_id=chat_id)
 
         except Exception as e:
             log("poll_error", error=str(e))
             await asyncio.sleep(5)
+
+
+async def setup_consumer():
+    global rabbitmq_channel
+    rabbitmq_channel = await rabbitmq_connection.channel()
+    await rabbitmq_channel.declare_queue(REQUEST_QUEUE, durable=True)
+    reply_queue = await rabbitmq_channel.declare_queue(REPLY_QUEUE, durable=True)
+    await reply_queue.consume(on_llm_response)
+    log("consumer_registered", reply_queue=REPLY_QUEUE)
 
 
 @app.get("/health")
@@ -218,16 +221,12 @@ def health():
 
 @app.on_event("startup")
 async def startup():
-    global rabbitmq_connection, rabbitmq_channel
+    global rabbitmq_connection
 
     rabbitmq_connection = await aio_pika.connect_robust(RABBITMQ_URL)
-    rabbitmq_channel = await rabbitmq_connection.channel()
+    rabbitmq_connection.reconnect_callbacks.add(lambda *_: asyncio.create_task(setup_consumer()))
 
-    # declare both queues so they exist regardless of start order
-    await rabbitmq_channel.declare_queue(REQUEST_QUEUE, durable=True)
-    reply_queue = await rabbitmq_channel.declare_queue(REPLY_QUEUE, durable=True)
-
-    await reply_queue.consume(on_llm_response)
+    await setup_consumer()
 
     log("startup", rabbitmq_url=RABBITMQ_URL, reply_queue=REPLY_QUEUE, model=DEFAULT_MODEL)
     asyncio.create_task(poll_loop())
