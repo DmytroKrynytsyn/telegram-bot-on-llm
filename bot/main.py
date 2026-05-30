@@ -1,12 +1,14 @@
 import os
 import json
 import time
+import uuid
 import logging
-import httpx
 import asyncio
+import httpx
 from fastapi import FastAPI
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Histogram, Counter
+import aio_pika
 
 class FilterHealthMetrics(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
@@ -20,7 +22,7 @@ Instrumentator().instrument(app).expose(app)
 
 llm_request_duration = Histogram(
     "llm_request_duration_seconds",
-    "Ollama LLM request duration",
+    "LLM request duration via llm-broker",
     ["model"]
 )
 
@@ -30,12 +32,15 @@ unauthorized_attempts = Counter(
 )
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://kbrain2:11434")
-OLLAMA_TIMEOUT = 30 * 60
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq.rabbitmq.svc.cluster.local/")
+REQUEST_QUEUE = "llm_requests"
+REPLY_QUEUE = "llm_responses_telegram_bot"
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 ALLOWED_USER_IDS = {int(uid) for uid in os.getenv("ALLOWED_USER_IDS", "").split(",") if uid.strip()}
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0")) or None
 MAX_MESSAGE_LENGTH = 2000
+LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "180"))
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "qwen2.5:32b-instruct-q2_K")
 
 SYSTEM_PROMPT = """You are a helpful personal assistant.
 You must never discuss, reveal, or speculate about:
@@ -46,8 +51,11 @@ You must never discuss, reveal, or speculate about:
 
 If asked about any of the above, politely decline."""
 
-ollama_model: str | None = None
-ollama_queue: asyncio.Queue = None
+# correlation_id → asyncio.Future
+pending: dict[str, asyncio.Future] = {}
+
+rabbitmq_connection: aio_pika.RobustConnection = None
+rabbitmq_channel: aio_pika.Channel = None
 
 
 def sanitize(text: str) -> str:
@@ -59,13 +67,6 @@ def sanitize(text: str) -> str:
 def log(event: str, **kwargs):
     sanitized = {k: sanitize(str(v)) for k, v in kwargs.items()}
     print(json.dumps({"event": event, **sanitized}, ensure_ascii=False), flush=True)
-
-
-async def get_model() -> str:
-    async with httpx.AsyncClient() as client:
-        r = await client.get(f"{OLLAMA_URL}/api/tags")
-        r.raise_for_status()
-        return r.json()["models"][0]["name"]
 
 
 async def get_updates(offset: int | None = None):
@@ -99,56 +100,74 @@ async def notify_admin(user: dict, text: str):
         })
 
 
-async def ask_ollama(prompt: str) -> str:
-    log("llm_request_started", model=ollama_model, prompt_len=len(prompt))
+async def ask_llm_broker(prompt: str) -> tuple[str, float, str]:
+    """Publish to llm_requests, wait for response on llm_responses_telegram_bot.
+    Returns (result, duration_seconds, model_used)."""
+    correlation_id = str(uuid.uuid4())
+    loop = asyncio.get_event_loop()
+    future: asyncio.Future = loop.create_future()
+    pending[correlation_id] = future
+
+    body = json.dumps({
+        "prompt": f"{SYSTEM_PROMPT}\n\nUser: {prompt}",
+        "model": DEFAULT_MODEL,
+        "request_id": correlation_id,
+    })
+
     t0 = time.monotonic()
+    log("llm_request_published", correlation_id=correlation_id, prompt_len=len(prompt))
+
+    await rabbitmq_channel.default_exchange.publish(
+        aio_pika.Message(
+            body=body.encode(),
+            correlation_id=correlation_id,
+            reply_to=REPLY_QUEUE,
+            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+        ),
+        routing_key=REQUEST_QUEUE,
+    )
+
     try:
-        async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
-            r = await client.post(
-                f"{OLLAMA_URL}/api/generate",
-                json={
-                    "model": ollama_model,
-                    "system": SYSTEM_PROMPT,
-                    "prompt": prompt,
-                    "stream": False,
-                },
-            )
-            r.raise_for_status()
-            reply = r.json()["response"]
-            duration = round(time.monotonic() - t0, 2)
-            llm_request_duration.labels(model=ollama_model).observe(duration)
-            log("llm_response_received", model=ollama_model, duration_s=duration, reply_len=len(reply))
-            return reply
-    except httpx.TimeoutException:
-        duration = round(time.monotonic() - t0, 2)
-        log("llm_timeout", model=ollama_model, duration_s=duration)
-        raise
-    except Exception as e:
-        duration = round(time.monotonic() - t0, 2)
-        log("llm_request_failed", model=ollama_model, duration_s=duration, error=str(e))
-        raise
+        response = await asyncio.wait_for(future, timeout=LLM_TIMEOUT)
+    finally:
+        pending.pop(correlation_id, None)
+
+    duration = time.monotonic() - t0
+    return response["result"], duration, response.get("model_used", DEFAULT_MODEL)
+
+
+async def on_llm_response(message: aio_pika.IncomingMessage) -> None:
+    async with message.process():
+        try:
+            body = json.loads(message.body)
+            correlation_id = message.correlation_id
+            future = pending.get(correlation_id)
+            if future and not future.done():
+                if body.get("error"):
+                    future.set_exception(Exception(body["error"]))
+                else:
+                    future.set_result(body)
+                log("llm_response_received", correlation_id=correlation_id,
+                    duration_s=body.get("duration_seconds"), model=body.get("model_used"))
+            else:
+                log("llm_response_no_waiter", correlation_id=correlation_id)
+        except Exception as e:
+            log("llm_response_parse_error", error=str(e))
 
 
 async def handle_message(chat_id: int, user: dict, text: str):
-    log("message_received", chat_id=chat_id, user=user, text_len=len(text), text=text)
+    log("message_received", chat_id=chat_id, user=user, text_len=len(text))
     try:
-        reply = await ask_ollama(text)
-        await send_message(chat_id, reply)
-        log("reply_sent", chat_id=chat_id, user=user, reply_len=len(reply), reply=reply)
-    except httpx.TimeoutException:
+        result, duration, model = await ask_llm_broker(text)
+        llm_request_duration.labels(model=model).observe(duration)
+        log("reply_sent", chat_id=chat_id, duration_s=round(duration, 2), model=model)
+        await send_message(chat_id, result)
+    except asyncio.TimeoutError:
+        log("llm_timeout", chat_id=chat_id)
         await send_message(chat_id, "⏰ timeout, please try again")
     except Exception as e:
         log("reply_error", chat_id=chat_id, error=str(e))
         await send_message(chat_id, "❌ something went wrong, please try again")
-
-
-async def ollama_worker():
-    while True:
-        chat_id, user, text = await ollama_queue.get()
-        try:
-            await handle_message(chat_id, user, text)
-        finally:
-            ollama_queue.task_done()
 
 
 async def poll_loop():
@@ -168,7 +187,7 @@ async def poll_loop():
                     continue
 
                 if ALLOWED_USER_IDS and user_id not in ALLOWED_USER_IDS:
-                    log("unauthorized_user", user_id=user_id, username=user.get("username"), user=user, text=text)
+                    log("unauthorized_user", user_id=user_id, username=user.get("username"))
                     unauthorized_attempts.inc()
                     await notify_admin(user, text)
                     await send_message(chat_id, "Sorry, you are not authorized to use this bot.")
@@ -178,14 +197,14 @@ async def poll_loop():
                     await send_message(chat_id, "⚠️ Message too long, please keep it under 2000 characters.")
                     continue
 
-                queue_size = ollama_queue.qsize()
+                queue_size = len(pending)
                 if queue_size > 0:
                     await send_message(chat_id, f"⏳ thinking... ({queue_size + 1} requests in queue)")
                 else:
                     await send_message(chat_id, "⏳ thinking...")
 
-                await ollama_queue.put((chat_id, user, text))
-                log("message_queued", chat_id=chat_id, user=user, queue_size=queue_size + 1)
+                asyncio.create_task(handle_message(chat_id, user, text))
+                log("message_queued", chat_id=chat_id, pending=queue_size + 1)
 
         except Exception as e:
             log("poll_error", error=str(e))
@@ -199,9 +218,16 @@ def health():
 
 @app.on_event("startup")
 async def startup():
-    global ollama_model, ollama_queue
-    ollama_queue = asyncio.Queue()
-    ollama_model = await get_model()
-    log("startup", model=ollama_model, ollama_url=OLLAMA_URL, allowed_users=list(ALLOWED_USER_IDS))
-    asyncio.create_task(ollama_worker())
+    global rabbitmq_connection, rabbitmq_channel
+
+    rabbitmq_connection = await aio_pika.connect_robust(RABBITMQ_URL)
+    rabbitmq_channel = await rabbitmq_connection.channel()
+
+    # declare both queues so they exist regardless of start order
+    await rabbitmq_channel.declare_queue(REQUEST_QUEUE, durable=True)
+    reply_queue = await rabbitmq_channel.declare_queue(REPLY_QUEUE, durable=True)
+
+    await reply_queue.consume(on_llm_response)
+
+    log("startup", rabbitmq_url=RABBITMQ_URL, reply_queue=REPLY_QUEUE, model=DEFAULT_MODEL)
     asyncio.create_task(poll_loop())

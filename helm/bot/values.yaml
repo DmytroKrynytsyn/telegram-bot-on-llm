@@ -1,7 +1,7 @@
 image:
   repository: dkrinitsyn/telegram-bot-on-llm
   pullPolicy: Always
-  tag: "20260425163505"
+  tag: "20260525172522"
 
 replicaCount: 1
 
@@ -11,6 +11,8 @@ service:
   targetPort: 8000
 
 env:
-  OLLAMA_URL: "http://kbrain2:11434"
+  RABBITMQ_URL: "amqp://guest:guest@rabbitmq.rabbitmq.svc.cluster.local/"
+  DEFAULT_MODEL: "qwen2.5:32b-instruct-q2_K"
+  LLM_TIMEOUT: "180"
 
 namespace: telegram-bot-on-llm
