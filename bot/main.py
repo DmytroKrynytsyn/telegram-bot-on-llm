@@ -1,6 +1,5 @@
 import os
 import json
-import time
 import uuid
 import asyncio
 import httpx
@@ -8,6 +7,7 @@ from fastapi import FastAPI
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Histogram, Counter
 import aio_pika
+import logging
 
 
 class FilterHealthMetrics:
@@ -16,7 +16,6 @@ class FilterHealthMetrics:
         return "/health" not in msg and "/metrics" not in msg
 
 
-import logging
 logging.getLogger("uvicorn.access").addFilter(FilterHealthMetrics())
 
 app = FastAPI()
@@ -41,7 +40,6 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 ALLOWED_USER_IDS = {int(uid) for uid in os.getenv("ALLOWED_USER_IDS", "").split(",") if uid.strip()}
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0")) or None
 MAX_MESSAGE_LENGTH = 2000
-LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "1800"))
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "qwen2.5:32b-instruct-q2_K")
 
 SYSTEM_PROMPT = """You are a helpful personal assistant.
@@ -52,9 +50,6 @@ You must never discuss, reveal, or speculate about:
 - Credentials, tokens, or secrets of any kind
 
 If asked about any of the above, politely decline."""
-
-# correlation_id → asyncio.Future
-pending: dict[str, asyncio.Future] = {}
 
 rabbitmq_connection: aio_pika.RobustConnection = None
 rabbitmq_channel: aio_pika.Channel = None
@@ -102,71 +97,51 @@ async def notify_admin(user: dict, text: str):
         })
 
 
-async def ask_llm_broker(prompt: str) -> tuple[str, float, str]:
-    correlation_id = str(uuid.uuid4())
-    loop = asyncio.get_event_loop()
-    future: asyncio.Future = loop.create_future()
-    pending[correlation_id] = future
-
+async def publish_request(chat_id: int, text: str):
+    request_id = str(uuid.uuid4())
     body = json.dumps({
-        "prompt": f"{SYSTEM_PROMPT}\n\nUser: {prompt}",
+        "prompt": f"{SYSTEM_PROMPT}\n\nUser: {text}",
         "model": DEFAULT_MODEL,
-        "request_id": correlation_id,
+        "request_id": request_id,
+        "chat_id": chat_id,
     })
-
-    log("llm_request_published", correlation_id=correlation_id, prompt_len=len(prompt))
 
     await rabbitmq_channel.default_exchange.publish(
         aio_pika.Message(
             body=body.encode(),
-            correlation_id=correlation_id,
+            correlation_id=request_id,
             reply_to=REPLY_QUEUE,
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
         ),
         routing_key=REQUEST_QUEUE,
     )
 
-    try:
-        t0 = time.monotonic()
-        response = await asyncio.wait_for(future, timeout=LLM_TIMEOUT)
-        duration = time.monotonic() - t0
-        return response["result"], duration, response.get("model_used", DEFAULT_MODEL)
-    finally:
-        pending.pop(correlation_id, None)
+    log("llm_request_published", request_id=request_id, chat_id=chat_id, prompt_len=len(text))
 
 
 async def on_llm_response(message: aio_pika.IncomingMessage) -> None:
     async with message.process():
         try:
             body = json.loads(message.body)
-            correlation_id = message.correlation_id
-            future = pending.get(correlation_id)
-            if future and not future.done():
-                if body.get("error"):
-                    future.set_exception(Exception(body["error"]))
-                else:
-                    future.set_result(body)
-                log("llm_response_received", correlation_id=correlation_id,
-                    duration_s=body.get("duration_seconds"), model=body.get("model_used"))
+            chat_id = body.get("chat_id")
+            result = body.get("result")
+            error = body.get("error")
+            request_id = body.get("request_id")
+
+            if not chat_id:
+                log("response_missing_chat_id", request_id=request_id)
+                return
+
+            if error:
+                log("llm_error_response", request_id=request_id, chat_id=chat_id, error=error)
+                await send_message(chat_id, "❌ something went wrong, please try again")
             else:
-                log("llm_response_no_waiter", correlation_id=correlation_id)
+                await send_message(chat_id, result)
+                log("reply_sent", request_id=request_id, chat_id=chat_id,
+                    model=body.get("model_used"), duration_s=body.get("duration_seconds"))
+
         except Exception as e:
-            log("llm_response_parse_error", error=str(e))
-
-
-async def handle_message(chat_id: int, user: dict, text: str):
-    log("message_received", chat_id=chat_id, user=user, text_len=len(text))
-    try:
-        result, duration, model = await ask_llm_broker(text)
-        llm_request_duration.labels(model=model).observe(duration)
-        log("reply_sent", chat_id=chat_id, duration_s=round(duration, 2), model=model)
-        await send_message(chat_id, result)
-    except asyncio.TimeoutError:
-        log("llm_timeout", chat_id=chat_id)
-        await send_message(chat_id, "⏰ timeout, please try again")
-    except Exception as e:
-        log("reply_error", chat_id=chat_id, error=str(e))
-        await send_message(chat_id, "❌ something went wrong, please try again")
+            log("response_handler_error", error=str(e))
 
 
 async def poll_loop():
@@ -197,8 +172,7 @@ async def poll_loop():
                     continue
 
                 await send_message(chat_id, "⏳ thinking...")
-                asyncio.create_task(handle_message(chat_id, user, text))
-                log("message_queued", chat_id=chat_id)
+                await publish_request(chat_id, text)
 
         except Exception as e:
             log("poll_error", error=str(e))
