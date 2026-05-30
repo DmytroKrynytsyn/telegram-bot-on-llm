@@ -1,7 +1,7 @@
 image:
   repository: dkrinitsyn/telegram-bot-on-llm
   pullPolicy: Always
-  tag: "20260530142240"
+  tag: "20260525172522"
 
 replicaCount: 1
 
@@ -13,6 +13,6 @@ service:
 env:
   RABBITMQ_URL: "amqp://guest:guest@rabbitmq.rabbitmq.svc.cluster.local/"
   DEFAULT_MODEL: "qwen2.5:32b-instruct-q2_K"
-  LLM_TIMEOUT: "180"
+  LLM_TIMEOUT: "1800"
 
 namespace: telegram-bot-on-llm
