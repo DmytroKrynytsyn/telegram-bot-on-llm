@@ -66,17 +66,32 @@ Transcript:
 
 ---
 
-Please write a structured one-page essay from this transcript.
+Your task is to transform this transcript into a structured, semi-academic one-page essay.
 Respond in the same language as the transcript ({lang}).
 
-Structure:
-- A clear title
-- A concise introduction
-- Key points organized in sections
-- A short conclusion
-- The original video link at the end: {url}
+Follow this structure strictly:
 
-Keep it informative and well-structured."""
+**Title**
+A sharp, informative title that captures the core idea.
+
+**Introduction** (2-3 sentences)
+Briefly state what the video is about and why it matters.
+
+**Key Points**
+Use clearly labeled sections or a numbered list. Each point should be concise but complete — do not omit any important idea from the transcript. Crystallize, do not generalize.
+
+**Conclusion** (2-3 sentences)
+Summarize the main takeaway and its significance.
+
+**Source**
+{url}
+
+Rules:
+- Do not invent anything not present in the transcript
+- Do not pad with filler phrases
+- Preserve all specific facts, numbers, names, and examples
+- One page maximum — be dense, not verbose
+- Use plain text formatting with ** for bold headers"""
 
 YOUTUBE_URL_PATTERN = re.compile(
     r"(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/)[\w\-]+"
