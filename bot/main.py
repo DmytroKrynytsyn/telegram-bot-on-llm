@@ -130,12 +130,17 @@ def fetch_video_info(url: str) -> tuple[str, str]:
             "quiet": True,
             "skip_download": True,
             "no_warnings": True,
-            "extract_flat": True,
+            "ignore_errors": True,
+            "extract_flat": "in_playlist",
+            "format": None,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            title = info.get("title", "Unknown Title")
+            if info is None:
+                return "Unknown Title", "en"
+            title = info.get("title") or "Unknown Title"
             lang = info.get("language") or info.get("default_audio_language") or "en"
+            lang = lang.split("-")[0].lower()
             return title, lang
     except Exception as e:
         log("yt_dlp_error", url=url, error=str(e))
@@ -145,16 +150,27 @@ def fetch_video_info(url: str) -> tuple[str, str]:
 def fetch_transcript(video_id: str, lang: str) -> str:
     try:
         entries = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang, "en"])
+        if entries:
+            return " ".join(e["text"] for e in entries)
     except NoTranscriptFound:
+        pass
+    except Exception:
+        pass
+
+    # fallback — try any available transcript
+    try:
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
         try:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
             transcript = transcript_list.find_generated_transcript([lang, "en"])
-            entries = transcript.fetch()
         except Exception:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
             transcript = next(iter(transcript_list))
-            entries = transcript.fetch()
-    return " ".join(e["text"] for e in entries)
+        entries = transcript.fetch()
+        if entries:
+            return " ".join(e["text"] for e in entries)
+    except Exception as e:
+        raise RuntimeError(f"Could not fetch any transcript for video {video_id}: {e}")
+
+    raise RuntimeError(f"Transcript is empty for video {video_id}")
 
 
 async def build_youtube_prompt(url: str) -> tuple[str, str]:
@@ -162,13 +178,8 @@ async def build_youtube_prompt(url: str) -> tuple[str, str]:
 
     video_id = extract_video_id(url)
 
-    (title, lang), transcript = await asyncio.gather(
-        loop.run_in_executor(None, fetch_video_info, url),
-        loop.run_in_executor(None, fetch_transcript, video_id, "en"),
-    )
-
-    if lang != "en":
-        transcript = await loop.run_in_executor(None, fetch_transcript, video_id, lang)
+    title, lang = await loop.run_in_executor(None, fetch_video_info, url)
+    transcript = await loop.run_in_executor(None, fetch_transcript, video_id, lang)
 
     prompt = YOUTUBE_PROMPT_TEMPLATE.format(
         title=title,
