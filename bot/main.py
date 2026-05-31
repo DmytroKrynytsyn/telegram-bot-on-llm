@@ -153,7 +153,7 @@ def fetch_transcript(video_id: str, lang: str) -> str:
     log("transcript_fetch_start", video_id=video_id, lang=lang)
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
-        ydl_opts = {"skip_download": True, "subtitleslangs": [lang, "en"], "quiet": True, "no_warnings": True, "format": "bestaudio/best"}
+        ydl_opts = {"skip_download": True, "subtitleslangs": [lang, "en"], "quiet": True, "no_warnings": True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
         auto = info.get("automatic_captions", {})
