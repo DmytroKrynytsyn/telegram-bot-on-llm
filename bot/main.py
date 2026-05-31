@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import uuid
 import asyncio
@@ -8,6 +9,9 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Histogram, Counter
 import aio_pika
 import logging
+from urllib.parse import urlparse, parse_qs
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+import yt_dlp
 
 
 class FilterHealthMetrics:
@@ -51,6 +55,29 @@ You must never discuss, reveal, or speculate about:
 
 If asked about any of the above, politely decline."""
 
+YOUTUBE_PROMPT_TEMPLATE = """Here is a transcript from a YouTube video.
+
+Title: {title}
+URL: {url}
+
+Transcript:
+{transcript}
+
+---
+
+Please write a structured one-page essay from this transcript:
+- A clear title
+- A concise introduction
+- Key points organized in sections
+- A short conclusion
+- The original video link at the end
+
+Keep it informative and well-structured."""
+
+YOUTUBE_URL_PATTERN = re.compile(
+    r"(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/)[\w\-]+"
+)
+
 rabbitmq_connection: aio_pika.RobustConnection = None
 rabbitmq_channel: aio_pika.Channel = None
 
@@ -64,6 +91,37 @@ def sanitize(text: str) -> str:
 def log(event: str, **kwargs):
     sanitized = {k: sanitize(str(v)) for k, v in kwargs.items()}
     print(json.dumps({"event": event, **sanitized}, ensure_ascii=False), flush=True)
+
+
+def extract_video_id(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.hostname in ("youtu.be",):
+        return parsed.path.lstrip("/")
+    if parsed.hostname in ("www.youtube.com", "youtube.com"):
+        video_id = parse_qs(parsed.query).get("v", [None])[0]
+        if video_id:
+            return video_id
+    raise ValueError(f"Could not extract video ID from URL: {url}")
+
+
+def fetch_video_title(url: str) -> str:
+    try:
+        ydl_opts = {"quiet": True, "skip_download": True, "no_warnings": True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return info.get("title", "Unknown Title")
+    except Exception:
+        return "Unknown Title"
+
+
+def fetch_transcript(video_id: str) -> str:
+    try:
+        entries = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
+    except NoTranscriptFound:
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        transcript = transcript_list.find_generated_transcript(["en"])
+        entries = transcript.fetch()
+    return " ".join(e["text"] for e in entries)
 
 
 async def get_updates(offset: int | None = None):
@@ -97,10 +155,28 @@ async def notify_admin(user: dict, text: str):
         })
 
 
-async def publish_request(chat_id: int, text: str):
+async def build_youtube_prompt(url: str) -> str:
+    loop = asyncio.get_event_loop()
+
+    video_id = extract_video_id(url)
+
+    # run blocking calls in thread pool to not block the event loop
+    title, transcript = await asyncio.gather(
+        loop.run_in_executor(None, fetch_video_title, url),
+        loop.run_in_executor(None, fetch_transcript, video_id),
+    )
+
+    return YOUTUBE_PROMPT_TEMPLATE.format(
+        title=title,
+        url=url,
+        transcript=transcript,
+    ), title
+
+
+async def publish_request(chat_id: int, prompt: str):
     request_id = str(uuid.uuid4())
     body = json.dumps({
-        "prompt": f"{SYSTEM_PROMPT}\n\nUser: {text}",
+        "prompt": prompt,
         "model": DEFAULT_MODEL,
         "request_id": request_id,
         "chat_id": chat_id,
@@ -116,7 +192,7 @@ async def publish_request(chat_id: int, text: str):
         routing_key=REQUEST_QUEUE,
     )
 
-    log("llm_request_published", request_id=request_id, chat_id=chat_id, prompt_len=len(text))
+    log("llm_request_published", request_id=request_id, chat_id=chat_id, prompt_len=len(prompt))
 
 
 async def on_llm_response(message: aio_pika.IncomingMessage) -> None:
@@ -167,12 +243,31 @@ async def poll_loop():
                     await send_message(chat_id, "Sorry, you are not authorized to use this bot.")
                     continue
 
+                # detect YouTube URL
+                yt_match = YOUTUBE_URL_PATTERN.search(text)
+                if yt_match:
+                    url = yt_match.group(0)
+                    await send_message(chat_id, "🎬 fetching transcript...")
+                    try:
+                        prompt, title = await build_youtube_prompt(url)
+                        log("youtube_transcript_fetched", chat_id=chat_id, url=url, title=title)
+                        await send_message(chat_id, f"⏳ summarizing: {title}")
+                        await publish_request(chat_id, prompt)
+                    except TranscriptsDisabled:
+                        await send_message(chat_id, "❌ transcripts are disabled for this video")
+                    except ValueError as e:
+                        await send_message(chat_id, f"❌ could not parse URL: {e}")
+                    except Exception as e:
+                        log("youtube_error", chat_id=chat_id, url=url, error=str(e))
+                        await send_message(chat_id, "❌ failed to fetch transcript, please try again")
+                    continue
+
                 if len(text) > MAX_MESSAGE_LENGTH:
                     await send_message(chat_id, "⚠️ Message too long, please keep it under 2000 characters.")
                     continue
 
                 await send_message(chat_id, "⏳ thinking...")
-                await publish_request(chat_id, text)
+                await publish_request(chat_id, f"{SYSTEM_PROMPT}\n\nUser: {text}")
 
         except Exception as e:
             log("poll_error", error=str(e))
