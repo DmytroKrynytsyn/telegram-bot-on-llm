@@ -59,18 +59,22 @@ YOUTUBE_PROMPT_TEMPLATE = """Here is a transcript from a YouTube video.
 
 Title: {title}
 URL: {url}
+Language: {lang}
 
 Transcript:
 {transcript}
 
 ---
 
-Please write a structured one-page essay from this transcript:
+Please write a structured one-page essay from this transcript.
+Respond in the same language as the transcript ({lang}).
+
+Structure:
 - A clear title
 - A concise introduction
 - Key points organized in sections
 - A short conclusion
-- The original video link at the end
+- The original video link at the end: {url}
 
 Keep it informative and well-structured."""
 
@@ -104,24 +108,60 @@ def extract_video_id(url: str) -> str:
     raise ValueError(f"Could not extract video ID from URL: {url}")
 
 
-def fetch_video_title(url: str) -> str:
+def fetch_video_info(url: str) -> tuple[str, str]:
+    """Returns (title, language_code)."""
     try:
-        ydl_opts = {"quiet": True, "skip_download": True, "no_warnings": True}
+        ydl_opts = {
+            "quiet": True,
+            "skip_download": True,
+            "no_warnings": True,
+            "extract_flat": True,
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            return info.get("title", "Unknown Title")
-    except Exception:
-        return "Unknown Title"
+            title = info.get("title", "Unknown Title")
+            lang = info.get("language") or info.get("default_audio_language") or "en"
+            return title, lang
+    except Exception as e:
+        log("yt_dlp_error", url=url, error=str(e))
+        return "Unknown Title", "en"
 
 
-def fetch_transcript(video_id: str) -> str:
+def fetch_transcript(video_id: str, lang: str) -> str:
     try:
-        entries = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
+        entries = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang, "en"])
     except NoTranscriptFound:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        transcript = transcript_list.find_generated_transcript(["en"])
-        entries = transcript.fetch()
+        try:
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            transcript = transcript_list.find_generated_transcript([lang, "en"])
+            entries = transcript.fetch()
+        except Exception:
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            transcript = next(iter(transcript_list))
+            entries = transcript.fetch()
     return " ".join(e["text"] for e in entries)
+
+
+async def build_youtube_prompt(url: str) -> tuple[str, str]:
+    loop = asyncio.get_event_loop()
+
+    video_id = extract_video_id(url)
+
+    (title, lang), transcript = await asyncio.gather(
+        loop.run_in_executor(None, fetch_video_info, url),
+        loop.run_in_executor(None, fetch_transcript, video_id, "en"),
+    )
+
+    if lang != "en":
+        transcript = await loop.run_in_executor(None, fetch_transcript, video_id, lang)
+
+    prompt = YOUTUBE_PROMPT_TEMPLATE.format(
+        title=title,
+        url=url,
+        transcript=transcript,
+        lang=lang,
+    )
+    return prompt, title
 
 
 async def get_updates(offset: int | None = None):
@@ -153,24 +193,6 @@ async def notify_admin(user: dict, text: str):
             "text": msg,
             "parse_mode": "HTML"
         })
-
-
-async def build_youtube_prompt(url: str) -> str:
-    loop = asyncio.get_event_loop()
-
-    video_id = extract_video_id(url)
-
-    # run blocking calls in thread pool to not block the event loop
-    title, transcript = await asyncio.gather(
-        loop.run_in_executor(None, fetch_video_title, url),
-        loop.run_in_executor(None, fetch_transcript, video_id),
-    )
-
-    return YOUTUBE_PROMPT_TEMPLATE.format(
-        title=title,
-        url=url,
-        transcript=transcript,
-    ), title
 
 
 async def publish_request(chat_id: int, prompt: str):
@@ -243,7 +265,6 @@ async def poll_loop():
                     await send_message(chat_id, "Sorry, you are not authorized to use this bot.")
                     continue
 
-                # detect YouTube URL
                 yt_match = YOUTUBE_URL_PATTERN.search(text)
                 if yt_match:
                     url = yt_match.group(0)
