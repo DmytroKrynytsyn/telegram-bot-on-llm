@@ -2,7 +2,6 @@ import os
 import re
 import json
 import uuid
-import time
 import asyncio
 import httpx
 from fastapi import FastAPI
@@ -11,7 +10,7 @@ from prometheus_client import Histogram, Counter
 import aio_pika
 import logging
 from urllib.parse import urlparse, parse_qs
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+import urllib.request
 import yt_dlp
 
 
@@ -152,57 +151,29 @@ def fetch_video_info(url: str) -> tuple[str, str]:
 
 def fetch_transcript(video_id: str, lang: str) -> str:
     log("transcript_fetch_start", video_id=video_id, lang=lang)
-
+    url = f"https://www.youtube.com/watch?v={video_id}"
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-
-        available = []
-        for t in transcript_list:
-            available.append({
-                "lang": t.language_code,
-                "generated": t.is_generated,
-            })
-        log("transcript_available", video_id=video_id, available=json.dumps(available))
-
-        transcript = None
-        for code in [lang, "en"]:
-            try:
-                transcript = transcript_list.find_transcript([code])
-                break
-            except Exception:
-                try:
-                    transcript = transcript_list.find_generated_transcript([code])
-                    break
-                except Exception:
-                    continue
-
-        if transcript is None:
-            transcript = next(iter(transcript_list))
-
-        log("transcript_selected", video_id=video_id, lang=transcript.language_code, generated=transcript.is_generated)
-
-        # retry fetch up to 3 times with backoff — YouTube sometimes returns empty on first call
-        last_error = None
-        for attempt in range(3):
-            try:
-                if attempt > 0:
-                    time.sleep(2 ** attempt)  # 2s, 4s
-                    log("transcript_fetch_retry", video_id=video_id, attempt=attempt)
-                entries = transcript.fetch()
-                if entries:
-                    log("transcript_fetch_success", video_id=video_id, entries=len(entries), attempt=attempt)
-                    return " ".join(e["text"] for e in entries)
-                log("transcript_fetch_empty", video_id=video_id, attempt=attempt)
-            except Exception as e:
-                last_error = e
-                log("transcript_fetch_attempt_error", video_id=video_id, attempt=attempt, error=str(e))
-
-        raise RuntimeError(f"Transcript fetch failed after 3 attempts: {last_error}")
-
+        ydl_opts = {"skip_download": True, "subtitleslangs": [lang, "en"], "quiet": True, "no_warnings": True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        auto = info.get("automatic_captions", {})
+        caps = auto.get(lang) or auto.get("en") or next(iter(auto.values()), None)
+        if not caps:
+            raise RuntimeError(f"No captions found for video {video_id}")
+        cap_url = next((f["url"] for f in caps if f["ext"] == "json3"), None)
+        if not cap_url:
+            raise RuntimeError(f"No json3 caption format for video {video_id}")
+        with urllib.request.urlopen(cap_url) as r:
+            data = json.loads(r.read())
+        text = " ".join(
+            seg.get("utf8", "") for e in data.get("events", []) for seg in e.get("segs", []) if seg.get("utf8")
+        ).replace("\n", " ")
+        log("transcript_fetch_success", video_id=video_id, chars=len(text))
+        return text
     except RuntimeError:
         raise
     except Exception as e:
-        log("transcript_error", video_id=video_id, error=str(e), error_type=type(e).__name__)
+        log("transcript_error", video_id=video_id, error=str(e))
         raise RuntimeError(f"Could not fetch transcript for video {video_id}: {e}")
 
 
