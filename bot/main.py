@@ -153,7 +153,7 @@ def fetch_transcript(video_id: str, lang: str) -> str:
     log("transcript_fetch_start", video_id=video_id, lang=lang)
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
-        ydl_opts = {"skip_download": True, "subtitleslangs": [lang, "en"], "quiet": True, "no_warnings": True}
+        ydl_opts = {"skip_download": True, "subtitleslangs": [lang, "en"], "quiet": True, "no_warnings": True, "format": "bestaudio/best"}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
         auto = info.get("automatic_captions", {})
@@ -304,8 +304,6 @@ async def poll_loop():
                         log("youtube_transcript_fetched", chat_id=chat_id, url=url, title=title)
                         await send_message(chat_id, f"⏳ summarizing: {title}")
                         await publish_request(chat_id, prompt)
-                    except TranscriptsDisabled:
-                        await send_message(chat_id, "❌ transcripts are disabled for this video")
                     except ValueError as e:
                         await send_message(chat_id, f"❌ could not parse URL: {e}")
                     except Exception as e:
