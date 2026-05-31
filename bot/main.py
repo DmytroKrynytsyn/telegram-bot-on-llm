@@ -137,10 +137,12 @@ def fetch_video_info(url: str) -> tuple[str, str]:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             if info is None:
+                log("yt_dlp_no_info", url=url)
                 return "Unknown Title", "en"
             title = info.get("title") or "Unknown Title"
             lang = info.get("language") or info.get("default_audio_language") or "en"
             lang = lang.split("-")[0].lower()
+            log("yt_dlp_info_fetched", url=url, title=title, lang=lang)
             return title, lang
     except Exception as e:
         log("yt_dlp_error", url=url, error=str(e))
@@ -148,29 +150,43 @@ def fetch_video_info(url: str) -> tuple[str, str]:
 
 
 def fetch_transcript(video_id: str, lang: str) -> str:
-    try:
-        entries = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang, "en"])
-        if entries:
-            return " ".join(e["text"] for e in entries)
-    except NoTranscriptFound:
-        pass
-    except Exception:
-        pass
+    log("transcript_fetch_start", video_id=video_id, lang=lang)
 
-    # fallback — try any available transcript
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        try:
-            transcript = transcript_list.find_generated_transcript([lang, "en"])
-        except Exception:
-            transcript = next(iter(transcript_list))
-        entries = transcript.fetch()
-        if entries:
-            return " ".join(e["text"] for e in entries)
-    except Exception as e:
-        raise RuntimeError(f"Could not fetch any transcript for video {video_id}: {e}")
 
-    raise RuntimeError(f"Transcript is empty for video {video_id}")
+        available = []
+        for t in transcript_list:
+            available.append({
+                "lang": t.language_code,
+                "generated": t.is_generated,
+            })
+        log("transcript_available", video_id=video_id, available=json.dumps(available))
+
+        # try requested lang first, then english, then first available
+        transcript = None
+        for code in [lang, "en"]:
+            try:
+                transcript = transcript_list.find_transcript([code])
+                break
+            except Exception:
+                try:
+                    transcript = transcript_list.find_generated_transcript([code])
+                    break
+                except Exception:
+                    continue
+
+        if transcript is None:
+            transcript = next(iter(transcript_list))
+
+        log("transcript_selected", video_id=video_id, lang=transcript.language_code, generated=transcript.is_generated)
+        entries = transcript.fetch()
+        log("transcript_fetch_success", video_id=video_id, entries=len(entries))
+        return " ".join(e["text"] for e in entries)
+
+    except Exception as e:
+        log("transcript_error", video_id=video_id, error=str(e), error_type=type(e).__name__)
+        raise RuntimeError(f"Could not fetch transcript for video {video_id}: {e}")
 
 
 async def build_youtube_prompt(url: str) -> tuple[str, str]:
