@@ -44,7 +44,7 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 ALLOWED_USER_IDS = {int(uid) for uid in os.getenv("ALLOWED_USER_IDS", "").split(",") if uid.strip()}
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0")) or None
 MAX_MESSAGE_LENGTH = 2000
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "qwen2.5:32b-instruct-q2_K")
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "qwen3:30b-a3b-instruct-2507-q4_K_M")
 
 SYSTEM_PROMPT = """You are a helpful personal assistant.
 You must never discuss, reveal, or speculate about:
