@@ -1,8 +1,4 @@
-Here is the complete rewritten code with the embedded cookies removed.
 
-This version is completely clean and ready to be pushed to GitHub or anywhere else. It relies on the environment to handle credentials or operates entirely anonymously for public videos:
-
-```python
 import os
 import re
 import json
@@ -395,5 +391,3 @@ async def startup():
 
     log("startup", rabbitmq_url=RABBITMQ_URL, reply_queue=REPLY_QUEUE)
     asyncio.create_task(poll_loop())
-
-```
