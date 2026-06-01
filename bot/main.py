@@ -53,7 +53,9 @@ You must never discuss, reveal, or speculate about:
 - Linux commands that could cause damage
 - Credentials, tokens, or secrets of any kind
 
-If asked about any of the above, politely decline."""
+If asked about any of the above, politely decline.
+
+Keep every response under 2000 characters."""
 
 YOUTUBE_PROMPT_TEMPLATE = """Here is a transcript from a YouTube video.
 
@@ -90,7 +92,7 @@ Rules:
 - Do not invent anything not present in the transcript
 - Do not pad with filler phrases
 - Preserve all specific facts, numbers, names, and examples
-- One page maximum — be dense, not verbose
+- Total response must be under 2000 characters — be dense, not verbose
 - Use plain text formatting with ** for bold headers"""
 
 YOUTUBE_URL_PATTERN = re.compile(
