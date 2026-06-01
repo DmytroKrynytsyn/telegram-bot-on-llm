@@ -12,6 +12,6 @@ service:
 
 env:
   RABBITMQ_URL: "amqp://guest:guest@rabbitmq.rabbitmq.svc.cluster.local/"
-LLM_TIMEOUT: "1800"
+  LLM_TIMEOUT: "7200"
 
 namespace: telegram-bot-on-llm
