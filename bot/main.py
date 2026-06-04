@@ -69,18 +69,23 @@ Transcript:
 ---
 
 Your task is to transform this transcript into a structured, semi-academic one-page essay.
+Respond clearly, in simple words, avoid long/complex constructions
 Respond in the same language as the transcript ({lang}).
 
 Follow this structure strictly:
 
 **Title**
-A sharp, informative title that captures the core idea.
+A sharp, informative title that captures the core idea of whole transcript.
 
 **Introduction** (2-3 sentences)
 Briefly state what the video is about and why it matters.
 
 **Key Points**
-Use clearly labeled sections or a numbered list. Each point should be concise but complete — do not omit any important idea from the transcript. Crystallize, do not generalize.
+Use clearly labeled sections or a numbered list. 
+Each point should be concise but complete — do not omit any important idea from the transcript. 
+Crystallize, do not generalize.
+
+If transcript/title mentions some list of things, like "top 5 of methods" or "10 tools for..." - make sure the list of the items is included in the answer.
 
 **Conclusion** (2-3 sentences)
 Summarize the main takeaway and its significance.
