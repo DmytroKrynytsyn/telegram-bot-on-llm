@@ -8,6 +8,8 @@ git push -> Github Action -> Docker Hub -> ArgoCD -> k3s
 
 The bot uses long-polling - no webhook, no ingress needed. On startup it auto-detects the first available Ollama model. Messages are processed sequentially (Ollama handles one request at a time).
 
+YouTube link processing (transcript fetch + LLM summarization) lives in the sibling [`youtube-to-text-unit`](https://github.com/DmytroKrynytsyn/youtube-to-text-unit) service. This bot only detects YouTube links and drops `{chat_id, url, request_id}` onto the `youtube-to-text-task` RabbitMQ queue; the result comes back on `telegram-response-message` and is relayed to the user as-is.
+
 ## Stack
 
 `k3s` · `ArgoCD` · `Helm` · `GitHub Actions` · `Docker Hub` · `FastAPI` · `uv` · `Ollama`
