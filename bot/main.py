@@ -129,6 +129,7 @@ async def publish_request(chat_id: int, prompt: str):
 
 async def on_llm_response(message: aio_pika.IncomingMessage) -> None:
     async with message.process():
+        log("llm_response_received", correlation_id=message.correlation_id)
         try:
             body = json.loads(message.body)
             chat_id = body.get("chat_id")
@@ -174,6 +175,7 @@ async def publish_youtube_task(chat_id: int, url: str):
 
 async def on_youtube_response(message: aio_pika.IncomingMessage) -> None:
     async with message.process():
+        log("youtube_response_received", correlation_id=message.correlation_id)
         try:
             body = json.loads(message.body)
             chat_id = body.get("chat_id")
