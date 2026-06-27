@@ -116,11 +116,11 @@ async def publish_request(chat_id: int, prompt: str):
         "prompt": prompt,
         "request_id": request_id,
         "chat_id": chat_id,
-    })
+    }).encode()
 
     await rabbitmq_channel.default_exchange.publish(
         aio_pika.Message(
-            body=body.encode(),
+            body=body,
             correlation_id=request_id,
             reply_to=REPLY_QUEUE,
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
@@ -128,12 +128,12 @@ async def publish_request(chat_id: int, prompt: str):
         routing_key=REQUEST_QUEUE,
     )
 
-    log("llm_request_published", request_id=request_id, chat_id=chat_id, prompt_len=len(prompt))
+    log("llm_request_published", request_id=request_id, chat_id=chat_id, prompt_len=len(prompt), message_bytes=len(body))
 
 
 async def on_llm_response(message: aio_pika.IncomingMessage) -> None:
     async with message.process():
-        log("llm_response_received", correlation_id=message.correlation_id)
+        log("llm_response_received", correlation_id=message.correlation_id, message_bytes=len(message.body))
         try:
             body = json.loads(message.body)
             chat_id = body.get("chat_id")
@@ -163,23 +163,23 @@ async def publish_youtube_task(chat_id: int, url: str):
         "url": url,
         "request_id": request_id,
         "chat_id": chat_id,
-    })
+    }).encode()
 
     await rabbitmq_channel.default_exchange.publish(
         aio_pika.Message(
-            body=body.encode(),
+            body=body,
             correlation_id=request_id,
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
         ),
         routing_key=YOUTUBE_TASK_QUEUE,
     )
 
-    log("youtube_task_published", request_id=request_id, chat_id=chat_id, url=url)
+    log("youtube_task_published", request_id=request_id, chat_id=chat_id, url=url, message_bytes=len(body))
 
 
 async def on_youtube_response(message: aio_pika.IncomingMessage) -> None:
     async with message.process():
-        log("youtube_response_received", correlation_id=message.correlation_id)
+        log("youtube_response_received", correlation_id=message.correlation_id, message_bytes=len(message.body))
         try:
             body = json.loads(message.body)
             chat_id = body.get("chat_id")
