@@ -17,4 +17,4 @@ env:
 namespace: telegram-bot-on-llm
 
 nodeSelector:
-  purpose: kappsdata1
+  purpose: kappsdata
