@@ -3,6 +3,7 @@ import os
 import re
 import json
 import uuid
+import socket
 import asyncio
 import httpx
 from fastapi import FastAPI
@@ -70,9 +71,12 @@ def sanitize(text: str) -> str:
     return text
 
 
+HOSTNAME = socket.gethostname()
+
+
 def log(event: str, **kwargs):
     sanitized = {k: sanitize(str(v)) for k, v in kwargs.items()}
-    print(json.dumps({"event": event, **sanitized}, ensure_ascii=False), flush=True)
+    print(json.dumps({"event": event, "hostname": HOSTNAME, **sanitized}, ensure_ascii=False), flush=True)
 
 
 async def get_updates(offset: int | None = None):

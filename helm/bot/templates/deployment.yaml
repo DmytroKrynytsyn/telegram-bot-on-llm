@@ -19,6 +19,8 @@ spec:
         prometheus.io/port: "8000"
     spec:
       terminationGracePeriodSeconds: 0
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
       containers:
         - name: telegram-bot-on-llm
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

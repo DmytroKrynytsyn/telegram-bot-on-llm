@@ -15,3 +15,6 @@ env:
   LLM_TIMEOUT: "28800"
 
 namespace: telegram-bot-on-llm
+
+nodeSelector:
+  purpose: kappsdata1
