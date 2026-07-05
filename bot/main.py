@@ -44,6 +44,7 @@ TELEGRAM_RESPONSE_QUEUE = "telegram-response-message"
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 ALLOWED_USER_IDS = {int(uid) for uid in os.getenv("ALLOWED_USER_IDS", "").split(",") if uid.strip()}
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0")) or None
+ADMIN_USER_IDS = {int(uid) for uid in os.getenv("ADMIN_USER_IDS", "").split(",") if uid.strip()}
 MAX_MESSAGE_LENGTH = 2000
 
 SYSTEM_PROMPT = """You are a helpful personal assistant.
@@ -110,12 +111,13 @@ async def notify_admin(user: dict, text: str):
         })
 
 
-async def publish_request(chat_id: int, prompt: str):
+async def publish_request(chat_id: int, prompt: str, user_priority: int):
     request_id = str(uuid.uuid4())
     body = json.dumps({
         "prompt": prompt,
         "request_id": request_id,
         "chat_id": chat_id,
+        "user_priority": user_priority,
     }).encode()
 
     await rabbitmq_channel.default_exchange.publish(
@@ -128,7 +130,7 @@ async def publish_request(chat_id: int, prompt: str):
         routing_key=REQUEST_QUEUE,
     )
 
-    log("llm_request_published", request_id=request_id, chat_id=chat_id, prompt_len=len(prompt), message_bytes=len(body))
+    log("llm_request_published", request_id=request_id, chat_id=chat_id, prompt_len=len(prompt), message_bytes=len(body), user_priority=user_priority)
 
 
 async def on_llm_response(message: aio_pika.IncomingMessage) -> None:
@@ -157,12 +159,13 @@ async def on_llm_response(message: aio_pika.IncomingMessage) -> None:
             log("response_handler_error", error=str(e))
 
 
-async def publish_youtube_task(chat_id: int, url: str):
+async def publish_youtube_task(chat_id: int, url: str, user_priority: int):
     request_id = str(uuid.uuid4())
     body = json.dumps({
         "url": url,
         "request_id": request_id,
         "chat_id": chat_id,
+        "user_priority": user_priority,
     }).encode()
 
     await rabbitmq_channel.default_exchange.publish(
@@ -174,7 +177,7 @@ async def publish_youtube_task(chat_id: int, url: str):
         routing_key=YOUTUBE_TASK_QUEUE,
     )
 
-    log("youtube_task_published", request_id=request_id, chat_id=chat_id, url=url, message_bytes=len(body))
+    log("youtube_task_published", request_id=request_id, chat_id=chat_id, url=url, message_bytes=len(body), user_priority=user_priority)
 
 
 async def on_youtube_response(message: aio_pika.IncomingMessage) -> None:
@@ -225,11 +228,13 @@ async def poll_loop():
                     await send_message(chat_id, "Sorry, you are not authorized to use this bot.")
                     continue
 
+                user_priority = 1 if user_id in ADMIN_USER_IDS else 2
+
                 yt_match = YOUTUBE_URL_PATTERN.search(text)
                 if yt_match:
                     url = yt_match.group(0)
                     await send_message(chat_id, "🎬 processing video...")
-                    await publish_youtube_task(chat_id, url)
+                    await publish_youtube_task(chat_id, url, user_priority)
                     continue
 
                 if len(text) > MAX_MESSAGE_LENGTH:
@@ -237,7 +242,7 @@ async def poll_loop():
                     continue
 
                 await send_message(chat_id, "⏳ thinking...")
-                await publish_request(chat_id, f"{SYSTEM_PROMPT}\n\nUser: {text}")
+                await publish_request(chat_id, f"{SYSTEM_PROMPT}\n\nUser: {text}", user_priority)
 
         except Exception as e:
             log("poll_error", error=str(e))
