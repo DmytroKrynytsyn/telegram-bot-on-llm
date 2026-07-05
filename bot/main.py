@@ -44,7 +44,6 @@ TELEGRAM_RESPONSE_QUEUE = "telegram-response-message"
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 ALLOWED_USER_IDS = {int(uid) for uid in os.getenv("ALLOWED_USER_IDS", "").split(",") if uid.strip()}
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0")) or None
-ADMIN_USER_IDS = {int(uid) for uid in os.getenv("ADMIN_USER_IDS", "").split(",") if uid.strip()}
 MAX_MESSAGE_LENGTH = 2000
 
 SYSTEM_PROMPT = """You are a helpful personal assistant.
@@ -228,7 +227,7 @@ async def poll_loop():
                     await send_message(chat_id, "Sorry, you are not authorized to use this bot.")
                     continue
 
-                user_priority = 1 if user_id in ADMIN_USER_IDS else 2
+                user_priority = 1 if user_id == ADMIN_CHAT_ID else 2
 
                 yt_match = YOUTUBE_URL_PATTERN.search(text)
                 if yt_match:
