@@ -91,7 +91,17 @@ async def get_updates(offset: int | None = None):
 
 async def send_message(chat_id: int, text: str):
     async with httpx.AsyncClient() as client:
-        await client.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": text})
+        try:
+            r = await client.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": text})
+        except httpx.HTTPError as e:
+            log("telegram_send_message_error", chat_id=chat_id, text_len=len(text), error=str(e))
+            return
+
+        if r.status_code != 200:
+            log("telegram_send_message_failed", chat_id=chat_id, text_len=len(text),
+                status_code=r.status_code, response=r.text)
+        else:
+            log("telegram_send_message_ok", chat_id=chat_id, text_len=len(text))
 
 
 async def notify_admin(user: dict, text: str):
