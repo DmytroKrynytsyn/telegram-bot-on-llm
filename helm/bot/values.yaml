@@ -1,7 +1,7 @@
 image:
   repository: dkrinitsyn/telegram-bot-on-llm
   pullPolicy: Always
-  tag: "20260906061820"
+  tag: "20260906070950"
 
 replicaCount: 1
 
