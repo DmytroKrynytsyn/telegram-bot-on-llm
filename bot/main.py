@@ -89,19 +89,45 @@ async def get_updates(offset: int | None = None):
         return r.json().get("result", [])
 
 
-async def send_message(chat_id: int, text: str):
-    async with httpx.AsyncClient() as client:
-        try:
-            r = await client.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": text})
-        except httpx.HTTPError as e:
-            log("telegram_send_message_error", chat_id=chat_id, text_len=len(text), error=str(e))
-            return
+TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 
-        if r.status_code != 200:
-            log("telegram_send_message_failed", chat_id=chat_id, text_len=len(text),
-                status_code=r.status_code, response=r.text)
-        else:
-            log("telegram_send_message_ok", chat_id=chat_id, text_len=len(text))
+
+def split_message(text: str, limit: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+
+    chunks = []
+    while text:
+        if len(text) <= limit:
+            chunks.append(text)
+            break
+        split_at = text.rfind("\n", 0, limit)
+        if split_at == -1:
+            split_at = text.rfind(" ", 0, limit)
+        if split_at == -1:
+            split_at = limit
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n ")
+    return chunks
+
+
+async def send_message(chat_id: int, text: str):
+    chunks = split_message(text)
+    async with httpx.AsyncClient() as client:
+        for i, chunk in enumerate(chunks):
+            try:
+                r = await client.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": chunk})
+            except httpx.HTTPError as e:
+                log("telegram_send_message_error", chat_id=chat_id, text_len=len(chunk),
+                    chunk=f"{i + 1}/{len(chunks)}", error=str(e))
+                return
+
+            if r.status_code != 200:
+                log("telegram_send_message_failed", chat_id=chat_id, text_len=len(chunk),
+                    chunk=f"{i + 1}/{len(chunks)}", status_code=r.status_code, response=r.text)
+                return
+            else:
+                log("telegram_send_message_ok", chat_id=chat_id, text_len=len(chunk), chunk=f"{i + 1}/{len(chunks)}")
 
 
 async def notify_admin(user: dict, text: str):
